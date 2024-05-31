@@ -8,11 +8,13 @@ from mapp import es
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import nltk
-import asyncio
-from rasa.core.agent import Agent
+from langchain_community.llms import Ollama
+# import asyncio
+# from rasa.core.agent import Agent
 nltk.download('punkt')
 nltk.download('stopwords')
-from nltk.stem import PorterStemmer
+# from nltk.stem import PorterStemmer
+
 
 @st.cache(allow_output_mutation=True)
 def connect_to_elasticsearch():
@@ -27,17 +29,7 @@ def connect_to_elasticsearch():
   
 rasa_server_url = "http://localhost:5005/webhooks/rest/webhook"
 
-class Model:
 
-    def __init__(self, model_path: str) -> None:
-        self.agent = Agent.load(model_path)
-        print("NLU model loaded")
-
-
-    def message(self, message: str) -> str:
-        message = message.strip()
-        result = asyncio.run(self.agent.parse_message(message))
-        return result
 
 
 def printres(results,brand,category,myset):
@@ -45,7 +37,7 @@ def printres(results,brand,category,myset):
     if brand and category:
         for result in results:
             
-            if count == 26 : break
+            if count == 21 : break
             if( result['_source']['secondary_category'].lower()!=category.lower().strip() or result['_source']['br_nm'].lower()!=brand.lower().strip()): continue
             count += 1
             myset.add(result['_source']['fullName'])
@@ -71,7 +63,7 @@ def printres(results,brand,category,myset):
                         st.divider()
     if brand:
         for result in results:
-            if count == 26 : break
+            if count == 21 : break
             if(result['_source']['br_nm'].lower()!=brand.lower().strip()): continue
             
             if result['_source']['fullName'] not in myset:
@@ -99,7 +91,7 @@ def printres(results,brand,category,myset):
                 count += 1
     if category:
         for result in results:
-            if count == 26 : break
+            if count == 21 : break
             if(result['_source']['secondary_category'].lower()!=category.lower().strip()): continue
             if result['_source']['fullName'] not in myset:
                 with st.container():
@@ -125,7 +117,7 @@ def printres(results,brand,category,myset):
                 myset.add(result['_source']['fullName'])
                 count += 1
     for result in results:
-        if count == 26 : break 
+        if count == 21 : break 
         if result['_source']['fullName'] not in myset:
                 with st.container():
                     if '_source' in result:
@@ -197,6 +189,29 @@ def search(input_keyword):
 
     return results
 
+def removekaro(input_string):
+    return input_string.replace(",", "")
+
+def parse_search_results(input_string: str,results) -> list:
+    # print(results)
+    colon_index = input_string.rfind(":")
+
+    if colon_index != -1:
+        names_string = input_string[colon_index + 1:]
+    else:
+        names_string = input_string
+
+    names = [name.strip() for name in names_string.split(",")]
+
+    results_list = names[:20]
+    
+    res = []
+
+    for result in results_list:
+        res.append(results[result])
+
+    return res
+
 def context_search(input_keyword):
     
     model = SentenceTransformer('all-mpnet-base-v2')
@@ -206,16 +221,34 @@ def context_search(input_keyword):
     query = {
             "field": "embeddings",
             "query_vector": vector_of_input_keyword,
-            "k": 500,
+            "k": 100,
             "num_candidates": 1000
         }
     res = es.knn_search(index="hkdata1"
                             , knn=query 
-                            , source=["fullName","search_text","br_nm","secondary_category"]
+                            , source=["fullName","search_text","br_nm","secondary_category","_id"]
                             )
     results = res["hits"]["hits"]
 
-    return results
+    data_for_llama3 = {}
+    appended_string = ""
+
+    for hit in results:
+        full_name = removekaro(hit["_source"]["fullName"])
+        full_name = full_name.strip()
+        data_for_llama3[str(hit["_id"])] = hit
+        appended_string += full_name + " " + hit["_id"] + ", " 
+
+    appended_string = appended_string[:-2]  
+
+    llama3_prompt = f"Select the 20 best options from the given options to the question '{input_keyword}':\n{appended_string} just give out the ID which is mentioned just before a comma give them out in a single separated by commas"
+    
+    llm = Ollama(model="llama3")
+    res = llm.invoke(llama3_prompt)
+    # print(res)
+    ans = parse_search_results(res,data_for_llama3)
+    # print(ans)
+    return ans
 
 def fuzzy_search(input_keyword):
 
@@ -264,8 +297,9 @@ def main():
         
         brand_match = ""
         category_match = ""
-
-        words = [word.strip() for word in text.split() if word.strip()]
+        words = ""
+        if len(text) != 0: 
+            words = [word.strip() for word in text.split() if word.strip()]
 
         for i in range(len(words)):
             if i == len(words) : break
@@ -296,16 +330,18 @@ def main():
         if(category == 'category ') : category = 'proteins'
 
         if brand : 
-            query += " " + brand
-
+            if brand == 'on ':
+                query += "optimum nutrition"
+            else : query += " " + brand
+        
         if brand == 'Optimum Nutrition ' :
             brand = 'on'
         
         results = search(query)
-        more_results = context_search(query)
+        # more_results = context_search(query)
 
-        print(brand)
-        print(category)
+        # print(brand)
+        # print(category)
 
         print(query)
 
